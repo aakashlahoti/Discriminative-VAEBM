@@ -1,7 +1,7 @@
 # Discriminative-VAEBM #
 Adding a discriminator conjoined with the VAEBM Model.
 
-VAEBM trains an energy network to refine the data distribution learned by an [NVAE](https://arxiv.org/abs/2007.03898), where the enery network and the VAE jointly define an Energy-based model.
+VAEBM trains an energy network to refine the data distribution learned by an [NVAE](https://arxiv.org/abs/2007.03898), where the energy network and the VAE jointly define an Energy-based model.
 The NVAE is pretrained before training the energy network, and please refer to [NVAE's implementation](https://github.com/NVlabs/NVAE) for more details about constructing and training NVAE.
 
 ## Training NVAE ##
