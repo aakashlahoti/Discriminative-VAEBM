@@ -20,6 +20,7 @@ from train_VAEBM_distributed import init_processes
 import torchvision
 from tqdm import tqdm
 from ebm_models import EBM_CelebA64, EBM_LSUN64, EBM_CIFAR32, EBM_CelebA256
+import os
 
 
 
@@ -82,7 +83,9 @@ def sample_from_EBM(model, VAE, t, opt):
         log_pxgz = output.log_prob(neg_x_renorm).sum(dim = [1,2,3])
         
 
-        dvalue = model(neg_x_renorm) - log_p_total - log_pxgz 
+        model_output_energy = -torch.logsumexp(model(neg_x_renorm), dim=1)
+        dvalue = model_output_energy - log_p_total - log_pxgz 
+        # dvalue = model(neg_x_renorm) - log_p_total - log_pxgz 
 
         dvalue = dvalue.mean()
         dvalue.backward()
@@ -147,7 +150,7 @@ def main(eval_args):
     t = 1.
     
     if eval_args.dataset == 'cifar10':
-        EBM_model = EBM_CIFAR32(3,eval_args.n_channel, data_init = eval_args.data_init).cuda()
+        EBM_model = EBM_CIFAR32(10,3,eval_args.n_channel, data_init = eval_args.data_init).cuda()
     elif eval_args.dataset == 'celeba_64':
         EBM_model = EBM_CelebA64(3,eval_args.n_channel, data_init = eval_args.data_init).cuda()
     elif eval_args.dataset == 'lsun_church':
@@ -166,12 +169,13 @@ def main(eval_args):
         
     iter_needed = eval_args.num_samples // eval_args.batch_size 
     model.eval()
+    os.makedirs(eval_args.savedir, exist_ok=True)
     for i in range(iter_needed):
         i = i 
         sample = sample_from_EBM(EBM_model, model, t, eval_args)
 
         for j in range(sample.size(0)):
-                   torchvision.utils.save_image(sample[j],(eval_args.savedir+'/EBM_sample_50k/{}.png').format(j+i*eval_args.batch_size),
+                   torchvision.utils.save_image(sample[j],(eval_args.savedir+'/{}.png').format(j+i*eval_args.batch_size),
                                                 normalize=True)
         print(i)
     
@@ -180,17 +184,17 @@ def main(eval_args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Sample from VAEBM')
     # experimental results
-    parser.add_argument('--checkpoint', type=str, default='/tmp/nvae/checkpoint.pth',
+    parser.add_argument('--checkpoint', type=str, default='./checkpoints/cifar10/checkpoint.pt',
                         help='location of the nvae checkpoint')
-    parser.add_argument('--ebm_checkpoint', type=str, default='/tmp/ebm/checkpoint.pth',
+    parser.add_argument('--ebm_checkpoint', type=str, default='./saved_models/cifar10/dvaebm_rampup/EBM_18000.pth',
                         help='location of the EBM checkpoint')
-    parser.add_argument('--save', type=str, default='/tmp/nasvae/expr',
+    parser.add_argument('--save', type=str, default='./log',
                         help='location of the NVAE logging')
 
     
-    parser.add_argument('--dataset', type=str, default='celeba_64',
+    parser.add_argument('--dataset', type=str, default='cifar10',
                         help='dataset name')
-    parser.add_argument('--im_size', type=int, default=64, help='size of image')
+    parser.add_argument('--im_size', type=int, default=32, help='size of image')
 
 
     parser.add_argument('--is_local', action='store_true', default=False,
@@ -207,16 +211,16 @@ if __name__ == '__main__':
                         help='address for master')
     
     
-    parser.add_argument('--savedir', default='./samples/', type=str, help='path to save samples for eval')
-    parser.add_argument('--num_samples', type=int, default = 10000, help='number of samples to generate')
+    parser.add_argument('--savedir', default='./samples_all/iter_18000/', type=str, help='path to save samples for eval')
+    parser.add_argument('--num_samples', type=int, default = 50000, help='number of samples to generate')
 
-    parser.add_argument('--batch_size', type=int, default = 40, help='batch size for generating samples from EBM')
-    parser.add_argument('--n_channel', type=int, default = 64, help='initial number of channels of EBM')
+    parser.add_argument('--batch_size', type=int, default = 50, help='batch size for generating samples from EBM')
+    parser.add_argument('--n_channel', type=int, default = 128, help='initial number of channels of EBM')
     parser.add_argument('--data_init', dest='data_init', action='store_false', help='data depedent init for weight norm')
     parser.add_argument('--renormalize', dest='renormalize', action='store_true', help = 'renormalize [0,1] to [-1,-1]')
 
-    parser.add_argument('--step_size', type=float, default=5e-6, help='step size for LD')
-    parser.add_argument('--num_steps', type=int, default=20, help='number of LD steps')
+    parser.add_argument('--step_size', type=float, default=8e-5, help='step size for LD')
+    parser.add_argument('--num_steps', type=int, default=16, help='number of LD steps')
 
     args = parser.parse_args()
 

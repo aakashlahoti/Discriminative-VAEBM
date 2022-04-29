@@ -263,6 +263,7 @@ class EBM_CIFAR32(nn.Module):
             ]
         )
 
+        # self.energy_output = nn.Linear(2*mid_channel, 1)
         self.linear = nn.Linear(2*mid_channel, num_classes)
         
         self.all_conv_layers = []
@@ -274,8 +275,20 @@ class EBM_CIFAR32(nn.Module):
         self.sr_v = {}
         self.num_power_iter = 4
 
+#     def forward(self, input):
+#         out = self.conv1(input)
 
+#         out = Lip_swish(out)
 
+#         for block in self.blocks:
+#             out = block(out)
+
+# #        out = Lip_swish(out)
+#         out = out.view(out.shape[0], out.shape[1], -1).sum(2)
+#         out = self.energy_output(out)
+
+#         return out.squeeze(1)
+    
     def forward(self, input):
         out = self.conv1(input)
 

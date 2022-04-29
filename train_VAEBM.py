@@ -5,6 +5,7 @@
 # ---------------------------------------------------------------
 '''Code for training VAEBM'''
 
+from cmath import exp
 import random
 import argparse
 import torch
@@ -15,7 +16,7 @@ import torch.distributed as dist
 from torch.multiprocessing import Process
 from torch.autograd import Variable
 from torch import optim
-from apex import amp
+# from apex import amp
 
 from nvae_model import AutoEncoder
 from train_VAEBM_distributed import init_processes
@@ -25,6 +26,10 @@ import torchvision
 from tqdm import tqdm
 from ebm_models import EBM_CelebA64, EBM_LSUN64, EBM_CIFAR32, EBM_CelebA256
 from thirdparty.igebm_utils import sample_data, clip_grad
+
+from torch.utils.tensorboard import SummaryWriter
+
+import math
 
 def set_bn(model, bn_eval_mode, num_samples=1, t=1.0, iter=100):
     if bn_eval_mode:
@@ -95,12 +100,12 @@ def sample_buffer(buffer, z_list_exampler, batch_size=64, t = 1, p=0.95, device=
     
         return eps_z
 
-def train(model, VAE, t, loader, opt, model_path, num_classes):
+def train(model, VAE, t, train_loader, valid_loader, opt, model_path, num_classes):
     step_size = opt.step_size
     sample_step = opt.num_steps
     
     requires_grad(VAE.parameters(), False)
-    loader = tqdm(enumerate(sample_data(loader)))
+    train_loader = tqdm(enumerate(sample_data(train_loader)))
     
 
     parameters = model.parameters()
@@ -111,6 +116,7 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
 
 
     d_s_t = []
+    valid_accuracies = []
     
     with torch.no_grad(): #get a bunch of samples to know how many groups of latent variables are there
         _, z_list, _ = VAE.sample(opt.batch_size, t) 
@@ -123,14 +129,16 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
 
     noise_list = [torch.randn(zi.size()).cuda() for zi in z_list]
 
-    # BCEwithLogitLoss for classification
+    # BCEWithLogitsLoss for classification
     criterion = torch.nn.BCEWithLogitsLoss()
+
+    writer = SummaryWriter()
+
     
-    for idx, (image) in loader:
-        image = image[0]
-        pre_label = image[1]
-        label = torch.nn.functional.one_hot(pre_label, num_classes).cuda()
+    for idx, (image, label) in train_loader:
         image = image.cuda()
+        label = label.cuda()
+        label = torch.nn.functional.one_hot(label, num_classes).float()
         
         noise_x = torch.randn(image.size()).cuda()
         
@@ -161,8 +169,9 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
             log_pxgz = output.log_prob(neg_x).sum(dim = [1,2,3])
         
             #compute energy
-            model_output_energy = -1*torch.logsumexp(-1*model(image), dim=1).cuda()
+            model_output_energy = -torch.logsumexp(model(neg_x), dim=1)
             dvalue = model_output_energy - log_p_total - log_pxgz 
+            # dvalue = model(neg_x) - log_p_total - log_pxgz 
             dvalue = dvalue.mean()
             dvalue.backward()
 
@@ -206,8 +215,10 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
         # opposite: \propto exp(f(x)). We use the former's notation
         
         # EBM Loss
-        pos_out = -1*torch.logsumexp(-1*model(image), dim=1).cuda()
-        neg_out = -1*torch.logsumexp(-1*model(neg_x), dim=1).cuda()
+        pos_out = -torch.logsumexp(model(image), dim=1)
+        neg_out = -torch.logsumexp(model(neg_x), dim=1)
+        # pos_out = model(image)
+        # neg_out = model(neg_x)
         
         # Norm loss
         norm_loss = model.spectral_norm_parallel()
@@ -215,12 +226,15 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
 
         # Classification Loss
         # Flip the sign and use BCEWithLogitsLoss 
-        logits = -1*model(image)
+        logits = model(image)
+        # logits = model.classify(image)
         classification_loss = criterion(logits, label)
 
         loss = pos_out.mean() - neg_out.mean()
-        loss_total = loss + classification_loss + loss_reg_s
-            
+        # print("Losses:", loss.item(), classification_loss.item(), loss_reg_s.item())
+        factor = 1e-3 * math.exp(-5 * pow(1 - min(idx / 4000, 1), 2))
+        loss_total = factor * loss + classification_loss + loss_reg_s
+        
         if opt.use_amp:
             with amp.scale_loss(loss_total, optimizer) as scaled_loss:
                 scaled_loss.backward()
@@ -236,9 +250,13 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
         if opt.use_buffer:
             buffer.push(eps_z)
 
-        loader.set_description(f'loss: {loss.mean().item():.5f}')
-        loss_print = pos_out.mean() - neg_out.mean()
-        d_s_t.append(loss_print.item())
+        train_loader.set_description(f'Total Loss: {loss_total.item():.5f}')
+        d_s_t.append(loss_total.item())
+
+        writer.add_scalar('Train/LossTotal', loss_total.item(), idx)
+        writer.add_scalar('Train/LossSampling', loss.item(), idx)
+        writer.add_scalar('Train/LossClassification', classification_loss.item(), idx)
+        writer.add_scalar('Train/LossReg', loss_reg_s.item(), idx)
 
         if idx % 100 == 0:
             neg_img = 0.5*output.dist.mu + 0.5
@@ -251,6 +269,12 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
 
             torch.save(d_s_t, model_path + 'd_s_t')
 
+            valid_acc = run_validation(valid_loader, model)
+            writer.add_scalar('Validation/Accuracy', valid_acc, idx)
+            valid_accuracies.append(valid_acc)
+
+            torch.save(valid_accuracies, model_path + 'valid_accuracies')
+
         
         if idx % 500 == 0:
             state_dict = {}
@@ -260,6 +284,19 @@ def train(model, VAE, t, loader, opt, model_path, num_classes):
 
         if idx == opt.total_iter:
             break
+
+def run_validation(valid_loader, model):
+    correct_count = 0
+    total_count = 0
+    model.eval()
+    for _, (image, label) in enumerate(valid_loader):
+        image = image.cuda()
+        label = label.cuda()
+        prediction = model(image)
+        prediction = torch.argmax(prediction, dim=1)
+        correct_count += torch.sum(prediction == label)
+        total_count += len(label)
+    return correct_count / total_count
 
 def main(eval_args):
     # ensures that weight initializations are all the same
@@ -294,7 +331,7 @@ def main(eval_args):
     logging.info('param size = %fM ', utils.count_parameters_in_M(model))
     
     t = 1 #temperature of VAE samples
-    loader, _, num_classes = datasets.get_loaders(eval_args)
+    train_loader, valid_loader, num_classes = datasets.get_loaders(eval_args)
 
     if eval_args.dataset == 'cifar10':
         EBM_model = EBM_CIFAR32(num_classes, 3,eval_args.n_channel, data_init = eval_args.data_init).cuda()
@@ -315,7 +352,7 @@ def main(eval_args):
     
     #use 5 batch of training images to initialize the data dependent init for weight norm
     init_image = []
-    for idx, (image) in enumerate(loader):
+    for idx, (image) in enumerate(train_loader):
         img = image[0]
         init_image.append(img)
         if idx == 4:
@@ -327,27 +364,27 @@ def main(eval_args):
     
     
     #call the training function
-    train(EBM_model, model, t, loader, eval_args, model_path, num_classes)
+    train(EBM_model, model, t, train_loader, valid_loader, eval_args, model_path, num_classes)
 
 if __name__ == '__main__':
     
     parser = argparse.ArgumentParser('training of VAEBM')
     # experimental results
-    parser.add_argument('--checkpoint', type=str, default='./checkpoints/VAE_checkpoint.pt',
+    parser.add_argument('--checkpoint', type=str, default='./checkpoints/cifar10/checkpoint.pt',
                         help='location of the NVAE checkpoint')
     parser.add_argument('--experiment', default='EBM_1', help='experiment name, model chekcpoint and samples will be saved here')
 
-    parser.add_argument('--save', type=str, default='/tmp/nasvae/expr',
+    parser.add_argument('--save', type=str, default='./log',
                         help='location of the NVAE logging')
 
-    parser.add_argument('--dataset', type=str, default='celeba_64',
+    parser.add_argument('--dataset', type=str, default='cifar10',
                         help='which dataset to use')
-    parser.add_argument('--im_size', type=int, default=64, help='size of image')
+    parser.add_argument('--im_size', type=int, default=32, help='size of image')
 
-    parser.add_argument('--data', type=str, default='../data/celeba_64/',
+    parser.add_argument('--data', type=str, default='../data/',
                         help='location of the data file')
 
-    parser.add_argument('--lr', type=float, default=5e-5,
+    parser.add_argument('--lr', type=float, default=4e-5,
                         help='learning rate for EBM')
 
     # DDP.
@@ -361,12 +398,12 @@ if __name__ == '__main__':
                         help='address for master')
     
     parser.add_argument('--batch_size', type=int, default = 32, help='batch size for training EBM')
-    parser.add_argument('--n_channel', type=int, default = 64, help='initial number of channels of EBM')
+    parser.add_argument('--n_channel', type=int, default = 128, help='initial number of channels of EBM')
 
     # traning parameters
     parser.add_argument('--alpha_s', type=float, default=0.2, help='spectral reg coef')
 
-    parser.add_argument('--step_size', type=float, default=5e-6, help='step size for LD')
+    parser.add_argument('--step_size', type=float, default=8e-5, help='step size for LD')
     parser.add_argument('--num_steps', type=int, default=10, help='number of LD steps')
     parser.add_argument('--total_iter', type=int, default=30000, help='number of training iteration')
 

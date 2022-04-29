@@ -1,0 +1,7 @@
+__pycache__/
+previous_saved_models/
+previous_runs/
+samples/
+samples_all/
+saved_models/
+checkpoints/cifar10/checkpoint.pt

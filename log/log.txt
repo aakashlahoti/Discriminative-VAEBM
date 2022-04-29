@@ -1,0 +1,3 @@
+2022-04-27 19:34:01,303 (Elapsed: 00:00:00) loading the model at:
+2022-04-27 19:34:01,303 (Elapsed: 00:00:00) ./checkpoints/cifar10/checkpoint.pt
+2022-04-27 19:34:01,843 (Elapsed: 00:00:00) loaded model at epoch 400
