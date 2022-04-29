@@ -1,12 +1,12 @@
-# Discriminative-VAEBM #
-Adding a discriminator conjoined with the VAEBM Model.
+# Joint-Modelling VAEBM #
 
-VAEBM trains an energy network to refine the data distribution learned by an [NVAE](https://arxiv.org/abs/2007.03898), where the energy network and the VAE jointly define an Energy-based model.
-The NVAE is pretrained before training the energy network, and please refer to [NVAE's implementation](https://github.com/NVlabs/NVAE) for more details about constructing and training NVAE.
+Joint-Modelling VAEBM trains a joint energy-based model built upon a pre-trained [NVAE](https://arxiv.org/abs/2007.03898) model and performs both image generation and image classification on the CIFAR-10 dataset.
+
+The first step entails training a NVAE model:
 
 ## Training NVAE ##
-We use the following commands on each dataset for training the NVAE backbone. To train NVAEs, please use its original [codebase](https://github.com/NVlabs/NVAE) with commands given here.
-#### CIFAR-10 (8x 16-GB GPUs) ####
+Use the following command to train the NVAE from its original [codebase](https://github.com/NVlabs/NVAE). Please note that the checkpoint model linked in the NVAE codebase is incompatible with Stochastic gradient Langevin dynamics (SGLD). 
+
 ```
 python train.py --data $DATA_DIR/cifar10 --root $CHECKPOINT_DIR --save $EXPR_ID --dataset cifar10 \
       --num_channels_enc 128 --num_channels_dec 128 --epochs 400 --num_postprocess_cells 2 --num_preprocess_cells 2 \
@@ -16,24 +16,16 @@ python train.py --data $DATA_DIR/cifar10 --root $CHECKPOINT_DIR --save $EXPR_ID 
       --num_process_per_node 8 --use_se --res_dist
 ```
 
-## Training VAEBM ##
-We use the following commands on each dataset for training VAEBM. Note that you need to train the NVAE on corresponding dataset before running the training command here.
-After training the NVAE, pass the path of the checkpoint to the `--checkpoint` argument.
+## Training the Joint-Modelling VAEBM ##
+After completing the previous step, please pass the path of the saved checkpoint in the `--checkpoint` argument. Since the training of Joint-Modelling VAEBM eventually explodes owing to overfitting, the code saves a checkpoint every 500 epochs. 
 
-Note that the training of VAEBM will eventually explode (See Appendix E of our paper), and therefore it is important to save checkpoint regularly. After the training explodes, stop running the code and use the last few saved checkpoints for testing.
-#### CIFAR-10 ####
-
-We train VAEBM on CIFAR-10 using one 32-GB V100 GPU. 
+We train Joint-Modelling VAEBM on CIFAR-10 using one RTX A6000 GPU. 
 ```
-python train_VAEBM.py  --checkpoint ./checkpoints/cifar10/checkpoint.pt --experiment cifar10_exp1 --dataset cifar10 --im_size 32 --data ./data/cifar10 --num_steps 10 --wd 3e-5 --step_size 8e-5 --total_iter 30000 --alpha_s 0.2 --lr 4e-5 --max_p 0.6 --anneal_step 5000. --batch_size 32 --n_channel 128
+python train_VAEBM.py  --checkpoint ./checkpoints/cifar10/checkpoint.pt --experiment cifar10_exp1 --dataset cifar10 --im_size 32 --data ./data/cifar10 --num_steps 10 --wd 3e-5 --step_size 8e-5 --total_iter 22000 --alpha_s 0.2 --lr 4e-5 --max_p 0.6 --anneal_step 5000. --batch_size 32 --n_channel 128
 ```
 
-## Sampling from VAEBM ##
-To generate samples from VAEBM after training, run ```sample_VAEBM.py```, and it will generate 50000 test images in your given path. When sampling, we typically use 
-longer Langvin dynamics than training for better sample quality, see Appendix E of the [paper](https://arxiv.org/abs/2010.00654) for the step sizes and number of steps we use to obtain test samples
-for each dataset. Other parameters that ensure successfully loading the VAE and energy network are the same as in the training codes. 
-
-For example, the script used to sample CIFAR-10 is
+## Sampling from Joint-Modelling VAEBM ##
+To generate samples from our model post training, run the following command. It will generate 50000 test images in your given path.
 ```
-python sample_VAEBM.py --checkpoint ./checkpoints/cifar_10/checkpoint.pt --ebm_checkpoint ./saved_models/cifar_10/cifar_exp1/EBM.pth --dataset cifar10 --im_size 32 --batch_size 40 --n_channel 128 --num_steps 16 --step_size 8e-5 
+python sample_VAEBM.py --checkpoint ./checkpoints/cifar_10/checkpoint.pt --ebm_checkpoint ./saved_models/cifar_10/cifar_exp1/EBM.pth --dataset cifar10 --im_size 32 --batch_size 50 --n_channel 128 --num_steps 16 --step_size 8e-5 
 ```
